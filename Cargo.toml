@@ -1,0 +1,12 @@
+[package]
+name = "rustify"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.25"
+serde = "1.0.217"
+home = "0.5.11"
+toml = "0.8.19"
+ratatui = { version = "0.29.0", features = ["all-widgets"] }
+color-eyre = "0.6.3"

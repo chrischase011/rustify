@@ -1,0 +1,9 @@
+[app]
+app_name = "Rustify"
+
+[theme]
+foreground = "light green"
+background = "black"
+h_foreground = "black"
+h_background = "white"
+border = "light green"
