@@ -1,12 +1,30 @@
-use std::{fs, io, path::Path, rc::Rc, time::{Duration, Instant}};
+use std::{fs, io, path::Path, rc::Rc, sync::Arc, time::{Duration, Instant}};
 use crossterm::event::{self, Event, KeyCode};
 use ratatui::{prelude::*, widgets::*};
 use glob::glob;
+use std::fs::File;
+use std::io::BufReader;
+use rodio::{Decoder, OutputStream, Sink};
+use rodio::source::{SineWave, Source};
 
-#[derive(Debug, Default)]
 pub struct App {
     exit: bool,
-    music_files: Vec<String>,  // To hold the list of music files
+    music_files: Vec<String>,
+    selected_song: usize,  
+    sink: Arc<Sink>,    
+    is_playing: bool,      
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self {
+            exit: false,
+            music_files: Vec::new(),
+            selected_song: 0,
+            sink: Arc::new(Sink::new_idle().0),
+            is_playing: false,
+        }
+    }
 }
 
 impl App {
@@ -45,10 +63,9 @@ impl App {
         // Bottom Panel: Instructions
         let instructions = Paragraph::new(vec![
             Line::from(Span::raw("Instructions: ")),
+            Line::from(Span::styled("[↑/↓] Navigate ", Style::default().fg(Color::Yellow))),
             Line::from(Span::styled("[P] Play ", Style::default().fg(Color::Green))),
-            Line::from(Span::styled("[S] Stop ", Style::default().fg(Color::Red))),
-            Line::from(Span::styled("[N] Next ", Style::default().fg(Color::Blue))),
-            Line::from(Span::styled("[T] Scan for Songs ", Style::default().fg(Color::Magenta))),
+            Line::from(Span::styled("[Q] Quit ", Style::default().fg(Color::Red))),
         ])
         .block(Block::default().title("Controls").borders(Borders::ALL));
         frame.render_widget(instructions, chunks[1]);
@@ -94,16 +111,131 @@ impl App {
 
     fn draw_music_library(&self, frame: &mut Frame, chunks: Rect) {
         let songs: Vec<ListItem> = self.music_files.iter().map(|s| ListItem::new(s.as_str())).collect();
+
         let music_library = List::new(songs)
             .block(Block::default().title("Music Library").borders(Borders::ALL))
             .highlight_style(
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
-            );
-        frame.render_widget(music_library, chunks);
+            )
+            .highlight_symbol("> ");  // Show an arrow next to the selected item
+
+        frame.render_stateful_widget(music_library, chunks, &mut self.selected_song_state());
     }
 
+    fn selected_song_state(&self) -> ListState {
+        let mut state = ListState::default();
+        state.select(Some(self.selected_song));
+        state
+    }
+
+
+    fn move_selection_up(&mut self) {
+        if self.selected_song > 0 {
+            self.selected_song -= 1;
+        }
+    }
+
+    fn move_selection_down(&mut self) {
+        if self.selected_song < self.music_files.len() - 1 {
+            self.selected_song += 1;
+        }
+    }
+
+    fn play_song(&mut self) {
+        if let Some(song) = self.music_files.get(self.selected_song) {
+            // If the song is already playing, just return
+            if self.is_playing {
+                println!("Song is already playing.");
+                return;
+            }
+
+            let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+            // let sink = Sink::try_new(&stream_handle).unwrap();
+
+            let file = BufReader::new(File::open(song).expect("Failed to open file"));
+            let source = Decoder::new(file).expect("Failed to decode audio");
+
+            // Store the sink and playback state
+            self.sink = Arc::new(Sink::try_new(&stream_handle).unwrap());
+            self.is_playing = true;
+            let sclone = self.sink.clone();
+            sclone.append(source);
+            
+
+            // Wait until the song ends
+            sclone.sleep_until_end();
+
+            println!("Playing: {}", song);
+        } else {
+            println!("No song selected.");
+        }
+    }
+
+    // Method to pause the song
+    fn pause_song(&mut self) {
+         if self.sink.is_paused() {
+            self.sink.play()
+        } else {
+            self.sink.pause()
+        }
+    }
+
+    // Method to resume the song
+    // fn resume_song(&mut self) {
+    //     if let Some(song) = self.music_files.get(self.selected_song) {
+    //         if !self.is_playing {
+    //             // If the song was paused, resume it
+    //             let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+    //             let sink = Sink::try_new(&stream_handle).unwrap();
+
+    //             let file = BufReader::new(File::open(song).expect("Failed to open file"));
+    //             let source = Decoder::new(file).expect("Failed to decode audio");
+
+    //             sink.append(source);
+
+    //             // Store the sink and set the song to playing
+    //             self.sink = Some(sink);
+    //             self.is_playing = true;
+
+    //             println!("Resuming: {}", song);
+    //         } else {
+    //             println!("The song is already playing.");
+    //         }
+    //     } else {
+    //         println!("No song selected.");
+    //     }
+    // }
+
+    fn scan_for_songs(&mut self) {
+        let mut files = Vec::new();
+        let extensions = ["mp3", "wav", "ogg"];
+
+        for ext in &extensions {
+            let pattern = format!("C:/Users/user/Downloads/*.{}", ext);
+
+            for entry in glob(&pattern).expect("Failed to read glob pattern") {
+                match entry {
+                    Ok(path) => {
+                        if path.is_file() {
+                            if let Some(path_str) = path.to_str() {
+                                files.push(path_str.to_string());
+                            } else {
+                                eprintln!("Error converting path to string: {:?}", path);
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("Error reading file: {:?}", e),
+                }
+            }
+        }
+
+        self.music_files = files;
+    }
+
+
+    
     fn handle_events(&mut self, tick_rate: Duration) -> io::Result<()> {
         let mut last_tick = Instant::now();
         let timeout = tick_rate
@@ -115,6 +247,11 @@ impl App {
                 match key.code {
                     KeyCode::Char('q') => self.exit = true,
                     KeyCode::Char('t') => self.scan_for_songs(),
+                    KeyCode::Char('p') => self.play_song(),
+                    KeyCode::Char('[') => self.pause_song(),
+                    // KeyCode::Char(']') => self.resume_song(),
+                    KeyCode::Up => self.move_selection_up(),
+                    KeyCode::Down => self.move_selection_down(),
                     _ => {}
                 }
             }
@@ -125,36 +262,5 @@ impl App {
         }
 
         Ok(())
-    }
-
-    // Method to scan the directory for audio files
-    fn scan_for_songs(&mut self) {
-        println!("Scanning for songs...");
-        
-        // Use forward slashes for path pattern
-        let pattern = "C:/Users/**/**/*.{mp3,wav,ogg}";
-    
-        let mut files = Vec::new();
-
-        // Using glob crate to match patterns
-        for entry in glob(pattern).expect("Failed to read glob pattern") {
-            match entry {
-                Ok(path) => {
-                    // Check if the path is a file
-                    if path.is_file() {
-                        // Ensure proper conversion of Path to String
-                        if let Some(path_str) = path.to_str() {
-                            files.push(path_str.to_string());
-                        } else {
-                            eprintln!("Error converting path to string: {:?}", path);
-                        }
-                    }
-                }
-                Err(e) => eprintln!("Error reading file: {:?}", e),
-            }
-        }
-
-        self.music_files = files;
-        println!("Found {} songs", self.music_files.len());
     }
 }
